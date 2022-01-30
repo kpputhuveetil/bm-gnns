@@ -20,29 +20,40 @@ from torch.utils.tensorboard import SummaryWriter
 import matplotlib.pyplot as plt
 
 #%%
-def generate_eval_figure(dataloader, pred):
-    initial_gt = dataloader[0].cloth_initial
-    final_gt = dataloader[0].cloth_final
+def generate_eval_figure(data, pred):
+    initial_gt = data['cloth_initial'].cpu()
+    final_gt = data['cloth_final'].cpu()
+    pred = pred.cpu()
 
-    aspect = (10, 8)
+    aspect = (12, 10)
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=aspect)
-    ax1.scatter(initial_gt[:,0], initial_gt[:,1])
-    ax1.scatter(final_gt[:,0], final_gt[:,1])
-    ax1.set_xlim([-0.7, 0.7])
-    ax1.set_ylim([-0.7, 1.1])
+    fig.patch.set_facecolor('white')
+    fig.patch.set_alpha(1.0)
 
-    ax2.scatter(initial_gt[:,0], initial_gt[:,1])
+    s1 = ax1.scatter(initial_gt[:,0], initial_gt[:,1], alpha=0.2, edgecolors='none')
+    s2 = ax1.scatter(final_gt[:,0], final_gt[:,1], alpha=0.6)
+    ax1.set_xlim([-0.7, 0.7])
+    ax1.set_ylim([-0.8, 1.2])
+    ax1.set_xlabel('x position')
+    ax1.set_ylabel('y position')
+
+    ax2.scatter(initial_gt[:,0], initial_gt[:,1], alpha=0.2)
+    s3 = ax2.scatter(pred.detach()[:,0], pred.detach()[:,1], color='red', alpha=0.6)
     ax2.set_xlim([-0.7, 0.7])
-    ax2.set_ylim([-0.7, 1.1])
-    ax2.scatter(pred.detach()[:,0], pred.detach()[:,1], color='red')
+    ax2.set_ylim([-0.8, 1.2])
+    ax2.set_xlabel('x position')
+    ax2.set_ylabel('y position')
     # plt.show()
+
+    fig.legend((s1,s2,s3), ('Initial GT', 'Final GT', 'Final Predicted'), 'lower center', ncol=3, borderaxespad=1.5)
 
     return fig
 
 
 #%%
-def run(args, epoch, dataloader, model, optimizer, scheduler, criterion, mode, device, save_visual_path=None):
+#! CHECK WHY THIS EPOCH IS HERE IN YUFEI'S CODE
+def run(args, epoch, dataloader, model, optimizer, scheduler, criterion, mode, device, take_images=False):
     if mode == 'train':
         model.train()
     elif mode == 'eval':
@@ -94,9 +105,17 @@ def run(args, epoch, dataloader, model, optimizer, scheduler, criterion, mode, d
                 optimizer.step()
             
             total_state_loss += state_loss.item()
+
+            if take_images:
+                figure = generate_eval_figure(data, state_predicted)
+                fig_dir = '/home/kpputhuveetil/git/vBM-GNNdev/bm-gnns/runs/sub_samp/et=6cm_an=ALL_pl=4_norm=L2_sub-samp=True_1642883658/images2'
+                figure.savefig(osp.join(fig_dir, f'eval_{i}.png'))
+                plt.close()
         
         if mode == 'train':
             scheduler.step(total_state_loss / len(dataloader))
+        
+
 
     eval_metrics = {
         'total_loss':total_state_loss,
@@ -118,24 +137,30 @@ def run_task(dataset, exp_dir, edge_thres, action_to_node, proc_layers, sub_samp
     seed = 1001
     torch.manual_seed(seed)
     if torch.cuda.is_available():
+        print("CUDA AVAILABLE")
         torch.cuda.manual_seed_all(seed)
     np.random.seed(seed)
     
-    checkpoints_dir = '/home/kpputhuveetil/git/bm_gnns/checkpoints'
+    checkpoints_dir = '/home/kpputhuveetil/git/vBM-GNNdev/checkpoints'
     checkpoints_dir = osp.join(checkpoints_dir, run_id)
     Path(checkpoints_dir).mkdir(parents=True, exist_ok=True)
 
+    # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device("cuda:0")
 
-    device = device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     # dataset = dataset.shuffle()
     train_len = round(len(dataset)*0.9)
     TRAIN_DATASET = dataset[:train_len]
     TEST_DATASET = dataset[train_len:]
 
-    cpus = multiprocessing.cpu_count()//2
-    cpus = multiprocessing.cpu_count() - 1
-    batch_size = cpus
-    num_workers = cpus
+    # cpus = multiprocessing.cpu_count()//2
+    # cpus = multiprocessing.cpu_count() - 1
+    batch_size = 100
+    num_workers = 8
+
+    # TRAIN_DATASET = TEST_DATASET = [dataset[0]]
+    # batch_size = num_workers = 1
+
     trainDataLoader = torch_geometric.data.DataLoader(TRAIN_DATASET, batch_size=batch_size, shuffle=True, num_workers=num_workers,
                                                     pin_memory=True, drop_last=True)
     testDataLoader = torch_geometric.data.DataLoader(TEST_DATASET, batch_size=batch_size, shuffle=False, num_workers=num_workers,
@@ -164,7 +189,7 @@ def run_task(dataset, exp_dir, edge_thres, action_to_node, proc_layers, sub_samp
     t_initial = time.time()
     for epoch in tqdm(range(args.epoch)):
         t0 = time.time()
-        save_visual_path = None
+        take_images = False
         train_metrics = run(
                             args, 
                             epoch, 
@@ -175,7 +200,7 @@ def run_task(dataset, exp_dir, edge_thres, action_to_node, proc_layers, sub_samp
                             model_criterion,
                             'train', 
                             device,
-                            save_visual_path)
+                            take_images)
         t1 = time.time()
         writer.add_scalar("Loss/train", train_metrics['total_loss'], epoch)
         writer.add_scalar("RMSE/train", train_metrics['rmse'], epoch)
@@ -221,6 +246,111 @@ def run_task(dataset, exp_dir, edge_thres, action_to_node, proc_layers, sub_samp
     print('DONE!\n')
 
 #%%
-dataset = BMDataset(root='data_2089', proc_data_dir='sub-samp_edge-thres=3cm_action=GRASP', subsample = True)
-run_task(dataset, 'runs/sub_samp/',3, 'GRASP', 4, True)
+def evaluate(dataset, exp_dir, edge_thres, action_to_node, proc_layers, sub_samp):
+    print(f"TEST: edge threshold = {edge_thres}, action to {action_to_node} nodes, processing layers = {proc_layers}")
+
+    run_id = f"et={edge_thres}cm_an={action_to_node}_pl={proc_layers}_norm=L2_sub-samp={sub_samp}_{round(time.time())}"
+    # writer_dir = osp.join(exp_dir, 'eval', run_id)
+    # # print(writer_dir)
+    # writer = SummaryWriter(writer_dir)
+
+    seed = 1001
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        print("CUDA AVAILABLE")
+        torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
+    
+    # checkpoints_dir = '/home/kpputhuveetil/git/vBM-GNNdev/checkpoints'
+    # checkpoints_dir = osp.join(checkpoints_dir, run_id)
+    # Path(checkpoints_dir).mkdir(parents=True, exist_ok=True)
+
+    # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device("cuda:0")
+
+    # dataset = dataset.shuffle()
+    train_len = round(len(dataset)*0.9)
+    TRAIN_DATASET = dataset[:train_len]
+    TEST_DATASET = dataset[train_len:]
+
+    # cpus = multiprocessing.cpu_count()//2
+    # cpus = multiprocessing.cpu_count() - 1
+    batch_size = 100
+    num_workers = 8
+
+
+    # TRAIN_DATASET = TEST_DATASET = [dataset[0]]
+    # batch_size = num_workers = 1
+
+
+    # trainDataLoader = torch_geometric.data.DataLoader(TRAIN_DATASET, batch_size=batch_size, shuffle=True, num_workers=num_workers,
+    #                                                 pin_memory=True, drop_last=True)
+    testDataLoader = torch_geometric.data.DataLoader(TEST_DATASET, batch_size=batch_size, shuffle=False, num_workers=num_workers,
+                                                    pin_memory=True, drop_last=True)
+    imageDataLoader = torch_geometric.data.DataLoader(TEST_DATASET[0:100], batch_size=1, shuffle=False, num_workers=1,
+                                                    pin_memory=True, drop_last=True)
+
+    print("The number of training data is: %d" % len(TRAIN_DATASET))
+    print("The number of test data is: %d" % len(TEST_DATASET))
+
+    args = SimpleNamespace(
+        seed=1001,
+        learning_rate=1e-4,
+        epoch = 250,
+        proc_layer_num=proc_layers, 
+        global_size=0,
+        output_size=2,
+        node_dim=6,
+        edge_dim=1)
+    checkpoint_path = '/home/kpputhuveetil/git/vBM-GNNdev/checkpoints/et=6cm_an=ALL_pl=4_norm=L2_sub-samp=True_1642883658/model_249.pth'
+    # checkpoint_path = '/home/kpputhuveetil/git/vBM-GNNdev/checkpoints/et=3cm_an=GRASP_pl=4_norm=L2_sub-samp=True_1642405730_overfit/model_249.pth'
+    model = GNNModel(args, args.proc_layer_num, args.global_size, args.output_size)
+    model.load_state_dict(torch.load(checkpoint_path)['model'])
+    model.to(device)
+    model_criterion = torch.nn.MSELoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
+    scheduler = ReduceLROnPlateau(optimizer, 'min', factor=0.8, patience=3, verbose=True)
+
+    train_metrics = run(
+                        args, 
+                        None, 
+                        testDataLoader, 
+                        model, 
+                        optimizer, 
+                        scheduler,
+                        model_criterion,
+                        'eval', 
+                        device,
+                        False)
+    print(train_metrics)
+
+    train_metrics = run(
+                        args, 
+                        None, 
+                        imageDataLoader, 
+                        model, 
+                        optimizer, 
+                        scheduler,
+                        model_criterion,
+                        'eval', 
+                        device,
+                        True)
+    print(train_metrics)
+
+    # print(train_metrics)
+    torch.cuda.empty_cache()
+
+
+    print('DONE!\n')
+
+#%%
+dataset = BMDataset(root='data_2089', proc_data_dir='sub-samp_edge-thres=6cm_action=ALL', subsample = True)
+run_task(dataset, 'runs/sub_samp/',6, 'ALL', 4, True)
+
+
+
+
+
+# %%
+evaluate(dataset, 'runs/sub_samp/',6, 'ALL', 4, True)
 # %%

@@ -21,7 +21,7 @@ class BMDataset(Dataset):
         prprocessed will be filled with the dataset when this class is instantiated
         """
         self.subsample = subsample
-        path = '/home/kpputhuveetil/git/bm_gnns'
+        path = '/home/kpputhuveetil/git/vBM-GNNdev/bm-gnns'
         data_dir = osp.join(path, root, 'raw/*.pkl')
         # data_dir = r/home/kpputhuveetil/git/bm_gnns/data_2089/raw/*.pkl'
         self.filenames = glob.glob(data_dir)
@@ -131,13 +131,13 @@ class BMDataset(Dataset):
 
         ## ACTION TO ALL CLOTH POINTS
 
-        # nodes = []
-        # for ind, point in enumerate(cloth_initial):
-        #     node_feature = list(point[0:2]) + list(action_scaled)
-        #     nodes.append(node_feature)
+        nodes = []
+        for ind, point in enumerate(cloth_initial):
+            node_feature = list(point[0:2]) + list(action_scaled)
+            nodes.append(node_feature)
 
 
-        # return torch.tensor(nodes, dtype=torch.float)
+        return torch.tensor(nodes, dtype=torch.float)
 
         # ACTION ONLY TO GRASPED CLOTH POINTS
 
@@ -171,7 +171,7 @@ class BMDataset(Dataset):
 
         cloth_initial_3D = np.array(cloth_initial)
         cloth_initial_2D = np.delete(cloth_initial_3D, 2, axis = 1)
-        threshold = 0.03
+        threshold = 0.06
         edge_inds = []
         for p1_ind, point_1 in enumerate(cloth_initial_2D):
             for p2_ind, point_2 in enumerate(cloth_initial_2D): # want duplicate edges to capture both directions of info sharing
@@ -222,10 +222,10 @@ class BMDataset(Dataset):
         return data
 
 #%%
-# # dataset = BMDataset(root='data_2089', proc_data_dir='edge-thres=2cm_action=GRASP')
-# dataset_sub = BMDataset(root='data_2089', proc_data_dir='sub-samp_edge-thres=2cm_action=GRASP', subsample = True)
-# # print(dataset)
-# print(dataset_sub)
+# dataset = BMDataset(root='data_2089', proc_data_dir='edge-thres=2cm_action=GRASP')
+dataset_sub = BMDataset(root='data_2089', proc_data_dir='sub-samp_edge-thres=6cm_action=ALL', subsample = True)
+# print(dataset)
+print(dataset_sub)
 
 
 
