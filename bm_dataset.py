@@ -1,5 +1,7 @@
 #%%
-import glob, pickle, multiprocessing, math
+from cgi import test
+import glob, pickle, multiprocessing, math, os, sys
+from logging import root
 import os.path as osp
 import numpy as np
 from numpy.lib import index_tricks
@@ -10,29 +12,47 @@ from torch_geometric.data import Dataset, Data
 
 from tqdm import tqdm
 
+# sys.path.insert(1, '/home/kpputhuveetil/git/vBM-GNNs/assistive-gym-fem/assistive_gym/envs')
+# from bu_gnn_util import sub_sample_point_clouds
+
 #%%
 
 
 class BMDataset(Dataset):
-    def __init__(self, root, proc_data_dir, transform=None, pre_transform=None, subsample=False):
+    def __init__(self, root, description, transform=None, pre_transform=None, voxel_size=float('NaN'), edge_threshold=0.06, action_to_all=True, testing=False):
         """
         root is where the data should be stored (data). The directory is split into "raw" and 'preprocessed' directories
         raw folder contains original pickle files
         prprocessed will be filled with the dataset when this class is instantiated
         """
-        self.subsample = subsample
-        path = '/home/kpputhuveetil/git/vBM-GNNdev/bm-gnns'
+        self.voxel_size = voxel_size
+        self.subsample = True if not (np.isnan(self.voxel_size)) else False
+        self.edge_threshold = edge_threshold
+        self.action_to_all = action_to_all
+        self.testing = testing
+
+        path = os.getcwd()
         data_dir = osp.join(path, root, 'raw/*.pkl')
-        # data_dir = r/home/kpputhuveetil/git/bm_gnns/data_2089/raw/*.pkl'
-        self.filenames = glob.glob(data_dir)
-        self.file_count = len(self.filenames)
+        #voxel size and edge threshold in cm
+        proc_data_dir = f"{description}_vs{self.voxel_size}-et{self.edge_threshold}-aa{int(self.action_to_all)}"
+        root = osp.join(root, proc_data_dir)
+
+        self.filenames_raw = glob.glob(data_dir)
+        self.file_count = len(self.filenames_raw)
         self.num_processes =  multiprocessing.cpu_count()-1
         self.reps = math.ceil(self.file_count/self.num_processes)
-        root = osp.join(root, proc_data_dir)
+
+        if self.file_count%self.num_processes != 0:
+            buffer = [None]*(self.num_processes - (self.file_count%self.num_processes))
+            self.filenames = self.filenames_raw + buffer
+        else:
+            self.filenames = self.filenames_raw
+
         # # FOR TESTING
-        # self.filenames = self.filenames[0]
-        # self.num_processes =1
-        # self.reps = 1
+        if self.testing:
+            self.filenames = self.filenames[0]
+            self.num_processes =1
+            self.reps = 1
         super(BMDataset, self).__init__(root, transform, pre_transform)
 
 
@@ -41,7 +61,7 @@ class BMDataset(Dataset):
         """
         if files exists in raw directory, download is not triggered (download function also not implemented here)
         """
-        return self.filenames
+        return self.filenames_raw
 
     @property
     def processed_file_names(self):
@@ -50,7 +70,7 @@ class BMDataset(Dataset):
         Not implemented here
         """
         """ If these files are found in processed_dir, processing is skipped"""
-        return [f'data_{i}.pt' for i in range(len(self.filenames))]
+        return [f'data_{i}.pt' for i in range(len(self.filenames_raw))]
         # return glob.glob(r'/home/kpputhuveetil/git/bm_gnns/data/processed/*.pt')
 
 
@@ -66,14 +86,13 @@ class BMDataset(Dataset):
     def process(self):
         """
         Allows us to construct a graph and pass it to a Data object (which models a single graph) for each data file
-
         """
         # self.filenames = self.filenames[0:self.num_processes]
         files_array = np.reshape(self.filenames, (self.reps, self.num_processes))
         result_objs = []
 
-        for rep, files in tqdm(enumerate(files_array)):
-            print(f"Rep: {rep+1}, Total Processed: {rep*self.num_processes}")
+        for rep, files in enumerate(tqdm(files_array)):
+            # print(f"Rep: {rep+1}, Total Processed: {rep*self.num_processes}")
             with multiprocessing.Pool(processes=self.num_processes) as pool:
                 for i,f in enumerate(files):
                     result = pool.apply_async(self.build_graph, args = [f, i+(rep*127)])
@@ -86,9 +105,13 @@ class BMDataset(Dataset):
 
     def build_graph(self, f, idx):
         # global idx
+        #! TODO: CHECK THIS!!
+        if f is None:
+            return
         raw_data = pickle.load(open(f, "rb"))
         action = raw_data['action']
-        # human_pose = raw_data['observation'][0]
+        human_pose = raw_data['observation'][0]
+       
 
         # initial_num_cloth_points = raw_data['info']['cloth_initial'][0]
         initial_blanket_state = raw_data['info']['cloth_initial'][1]
@@ -101,16 +124,21 @@ class BMDataset(Dataset):
 
         # Get  node features
         node_features = self.get_node_features(initial_blanket_state, action)
+        
         edge_indices = self.get_edge_connectivity(initial_blanket_state)
+    
+        edge_features = torch.zeros(edge_indices.size()[0], 1, dtype=torch.float)
         cloth_initial, cloth_final = self.get_cloth_as_tensor(initial_blanket_state, final_blanket_state)
 
         # Read data from `raw_path`.
         data = Data(
             x = node_features,
+            edge_attr = edge_features,
             edge_index = edge_indices.t().contiguous(),
             cloth_initial = cloth_initial,
             cloth_final = cloth_final,
-            action = torch.tensor(action, dtype=torch.float)
+            action = torch.tensor(action, dtype=torch.float),
+            human_pose = torch.tensor(human_pose, dtype=torch.float)
         )
 
         # if self.pre_filter is not None and not self.pre_filter(data):
@@ -119,7 +147,8 @@ class BMDataset(Dataset):
         # if self.pre_transform is not None:
         #     data = self.pre_transform(data)
 
-        torch.save(data, osp.join(self.processed_dir, f'data_{idx}.pt'))
+        if not self.testing:
+            torch.save(data, osp.join(self.processed_dir, f'data_{idx}.pt'))
     
     def get_node_features(self, cloth_initial, action):
         """
@@ -129,37 +158,30 @@ class BMDataset(Dataset):
         scale = [0.44, 1.05]*2
         action_scaled = action*scale
 
-        ## ACTION TO ALL CLOTH POINTS
 
-        nodes = []
-        for ind, point in enumerate(cloth_initial):
-            node_feature = list(point[0:2]) + list(action_scaled)
-            nodes.append(node_feature)
-
-
-        return torch.tensor(nodes, dtype=torch.float)
-
-        # ACTION ONLY TO GRASPED CLOTH POINTS
-
-        grasp_loc = action_scaled[0:2]
-
-        dist = []
-        for i, v in enumerate(cloth_initial):
-            v = np.array(v)
-            d = np.linalg.norm(v[0:2] - grasp_loc)
-            dist.append(d)
-
-        anchor_idx = np.argpartition(np.array(dist), 4)[:4]
-
-
-        nodes = []
-        for ind, point in enumerate(cloth_initial):
-            if ind in anchor_idx:
+        if self.action_to_all:
+            ## ACTION TO ALL CLOTH POINTS
+            nodes = []
+            for ind, point in enumerate(cloth_initial):
                 node_feature = list(point[0:2]) + list(action_scaled)
-            else:
-                node_feature = list(point[0:2]) + [0]*len(action_scaled)
-            nodes.append(node_feature)
+                nodes.append(node_feature)
+        else:
+            # ACTION ONLY TO GRASPED CLOTH POINTS
+            grasp_loc = action_scaled[0:2]
+            dist = []
+            for i, v in enumerate(cloth_initial):
+                v = np.array(v)
+                d = np.linalg.norm(v[0:2] - grasp_loc)
+                dist.append(d)
+            anchor_idx = np.argpartition(np.array(dist), 4)[:4]
 
+            nodes = []
+            for ind, point in enumerate(cloth_initial):
+                if ind in anchor_idx:
+                    node_feature = list(point[0:2]) + list(action_scaled)
+                else:
+                    node_feature = list(point[0:2]) + [0]*len(action_scaled)
+                nodes.append(node_feature)
 
         return torch.tensor(nodes, dtype=torch.float)
     
@@ -168,10 +190,9 @@ class BMDataset(Dataset):
         returns an array of edge indexes, returned as a list of index tuples
         Data requires indexes to be in COO format so will need to convert via performing transpose (.t()) and calling contiguous (.contiguous())
         """
-
         cloth_initial_3D = np.array(cloth_initial)
         cloth_initial_2D = np.delete(cloth_initial_3D, 2, axis = 1)
-        threshold = 0.06
+        threshold = self.edge_threshold
         edge_inds = []
         for p1_ind, point_1 in enumerate(cloth_initial_2D):
             for p2_ind, point_2 in enumerate(cloth_initial_2D): # want duplicate edges to capture both directions of info sharing
@@ -190,9 +211,9 @@ class BMDataset(Dataset):
         return cloth_i_tensor, cloth_f_tensor
 
     def sub_sample_point_clouds(self, cloth_initial_3D_pos, cloth_final_3D_pos):
-        voxel_size=0.05
         cloth_initial = np.array(cloth_initial_3D_pos)
         cloth_final = np.array(cloth_final_3D_pos)
+        voxel_size = self.voxel_size
         nb_vox=np.ceil((np.max(cloth_initial, axis=0) - np.min(cloth_initial, axis=0))/voxel_size)
         non_empty_voxel_keys, inverse, nb_pts_per_voxel = np.unique(((cloth_initial - np.min(cloth_initial, axis=0)) // voxel_size).astype(int), axis=0, return_inverse=True, return_counts=True)
         idx_pts_vox_sorted=np.argsort(inverse)
@@ -221,11 +242,28 @@ class BMDataset(Dataset):
         data = torch.load(osp.join(self.processed_dir, f'data_{idx}.pt'))
         return data
 
+#%%        
+# dataset = BMDataset(
+#     root='/home/kpputhuveetil/git/vBM-GNNdev/gnn_new_data', 
+#     description='50k_samples',
+#     voxel_size=0.05, 
+#     edge_threshold=0.06, 
+#     action_to_all=True, 
+#     testing=False)
+
+#%%
+# dataset = BMDataset(
+#     root='data_2089', 
+#     description='dyn-gnn',
+#     voxel_size=0.05, 
+#     edge_threshold=0.06, 
+#     action_to_all=True, 
+#     testing=False)
 #%%
 # dataset = BMDataset(root='data_2089', proc_data_dir='edge-thres=2cm_action=GRASP')
-dataset_sub = BMDataset(root='data_2089', proc_data_dir='sub-samp_edge-thres=6cm_action=ALL', subsample = True)
-# print(dataset)
-print(dataset_sub)
+# dataset_sub = BMDataset(root='data_2089', proc_data_dir='sub-samp_edge-thres=6cm_action=ALL', subsample = True)
+# # print(dataset)
+# print(dataset_sub)
 
 
 
