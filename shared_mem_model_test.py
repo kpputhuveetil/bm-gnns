@@ -45,14 +45,14 @@ def access_model(idx, model, data):
     pred = model(data)['target'].detach().numpy()
 
     return pred
-    # q.put(pred)
+
 
 
 #%%
 #! START MAIN
 if __name__ == '__main__':
     multiprocessing.set_start_method('spawn')
-    q = multiprocessing.Queue()
+
 
     # * make the enviornment, set the specified target limb code and an initial seed value
     checkpoint = "/home/kpputhuveetil/git/vBM-GNNdev/trained_models/train10k_cont_learn_epochs=250_batch=100_workers=4_1646202554"
