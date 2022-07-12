@@ -1,12 +1,9 @@
 #%%
 from audioop import mul
 import sys, time, math, os
-sys.stderr = sys.__stderr__
-sys.stdout = sys.__stdout__
-# stderr = sys.stderr
-# sys.stderr = open('/dev/null', 'w')
-# import multiprocessing
 from torch import multiprocessing
+
+import os
 
 from sklearn.metrics import coverage_error
 sys.path.insert(0, '/home/kpputhuveetil/git/vBM-GNNdev/assistive-gym-fem')
@@ -30,16 +27,17 @@ def counter_callback(output):
     print()
 
 #%%
-def access_model(idx, model, data):
+def access_model(idx, model, data, device):
 
-    data = data.to_dict()
+    data = data.to(device).to_dict()
 
     batch = torch.zeros(data['x'].shape[0], dtype=torch.long)
     data['batch'] = batch
     
     batch_num = np.max(batch.data.cpu().numpy()) + 1
     global_size = 0
-    global_vec = torch.zeros(int(batch_num), global_size, dtype=torch.float32)
+    global_vec = torch.zeros(int(batch_num), global_size, dtype=torch.float32, device=device)
+    # global_vec = torch.zeros(int(batch_num), global_size, dtype=torch.float32)
     data['u'] = global_vec
 
     pred = model(data)['target'].detach().numpy()
@@ -65,7 +63,8 @@ if __name__ == '__main__':
         action_to_all=True, 
         testing=False)
 
-    gnn_train_test = GNN_Train_Test('cpu')
+    device = 'cpu'
+    gnn_train_test = GNN_Train_Test(device)
     gnn_train_test.load_model_from_checkpoint(checkpoint)
     gnn_train_test.model.share_memory()
     gnn_train_test.model.eval()
@@ -77,13 +76,13 @@ if __name__ == '__main__':
 
     result_objs = []
 
-    num_processes = 100
+    num_processes = 10
     with multiprocessing.Pool(processes=num_processes) as pool:
         for i in range(num_processes):
-            result = pool.apply_async(access_model, args=(i, model, data))
+            result = pool.apply_async(access_model, args=(i, model, data, device))
             result_objs.append(result)
         
         results = [result.get() for result in result_objs]
     t1 = time.time()
-    print(results)
+    # print(results)
     print(t1-t0)
