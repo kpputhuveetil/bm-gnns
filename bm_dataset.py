@@ -15,11 +15,13 @@ from tqdm import tqdm
 # sys.path.insert(1, '/home/kpputhuveetil/git/vBM-GNNs/assistive-gym-fem/assistive_gym/envs')
 # from bu_gnn_util import sub_sample_point_clouds
 
+
+#!!! DELETE CHANGES FOR CMA-DATA
 #%%
 
 
 class BMDataset(Dataset):
-    def __init__(self, root, description, transform=None, pre_transform=None, voxel_size=float('NaN'), edge_threshold=0.06, action_to_all=True, testing=False):
+    def __init__(self, root, description, transform=None, pre_transform=None, voxel_size=float('NaN'), edge_threshold=0.06, action_to_all=True, use_cma_data=False, testing=False):
         """
         root is where the data should be stored (data). The directory is split into "raw" and 'preprocessed' directories
         raw folder contains original pickle files
@@ -36,8 +38,10 @@ class BMDataset(Dataset):
         #voxel size and edge threshold in cm
         proc_data_dir = f"{description}_vs{self.voxel_size}-et{self.edge_threshold}-aa{int(self.action_to_all)}"
         root = osp.join(root, proc_data_dir)
+        # print(root)
 
         self.filenames_raw = glob.glob(data_dir)
+        # print(self.filenames_raw)
         self.file_count = len(self.filenames_raw)
         self.num_processes =  multiprocessing.cpu_count()-1
         self.reps = math.ceil(self.file_count/self.num_processes)
@@ -53,6 +57,9 @@ class BMDataset(Dataset):
             self.filenames = self.filenames[0]
             self.num_processes =1
             self.reps = 1
+        
+        self.unpickling_errors = []
+        self.use_cma_data = use_cma_data
         super(BMDataset, self).__init__(root, transform, pre_transform)
 
 
@@ -70,6 +77,10 @@ class BMDataset(Dataset):
         Not implemented here
         """
         """ If these files are found in processed_dir, processing is skipped"""
+        proc_files = [f'data_{i}.pt' for i in range(len(self.filenames_raw))]
+        # print(proc_files[0:10])
+        # print(len(proc_files))
+        # return [f'data_{i}.pt' for i in range(10)]
         return [f'data_{i}.pt' for i in range(len(self.filenames_raw))]
         # return glob.glob(r'/home/kpputhuveetil/git/bm_gnns/data/processed/*.pt')
 
@@ -91,6 +102,8 @@ class BMDataset(Dataset):
         files_array = np.reshape(self.filenames, (self.reps, self.num_processes))
         result_objs = []
 
+        print(self.processed_dir)
+
         for rep, files in enumerate(tqdm(files_array)):
             # print(f"Rep: {rep+1}, Total Processed: {rep*self.num_processes}")
             with multiprocessing.Pool(processes=self.num_processes) as pool:
@@ -105,11 +118,26 @@ class BMDataset(Dataset):
 
     def build_graph(self, f, idx):
         # global idx
+        # data = Data()
+        # if not self.testing:
+        #     torch.save(data, osp.join(self.processed_dir, f'data_test{idx}.pt'))
+        # return
+
+
         #! TODO: CHECK THIS!!
         if f is None:
             return
-        raw_data = pickle.load(open(f, "rb"))
+
+        try:
+            raw_data = pickle.load(open(f, "rb"))
+        except:
+            print('UnpickingError:', f)
+            self.unpickling_errors.append(f)
+            return 
+        
         action = raw_data['action']
+        if self.use_cma_data:
+            raw_data = raw_data['sim_info']
         human_pose = raw_data['observation'][0]
        
 
@@ -165,6 +193,9 @@ class BMDataset(Dataset):
             for ind, point in enumerate(cloth_initial):
                 node_feature = list(point[0:2]) + list(action_scaled)
                 nodes.append(node_feature)
+                #! USE SOMETHING LIKE THIS INSTEAD
+                # nodes = np.append(cloth_initial_3D_pos, [action]*len(cloth_initial_3D_pos), axis=1).tolist()
+
         else:
             # ACTION ONLY TO GRASPED CLOTH POINTS
             grasp_loc = action_scaled[0:2]
@@ -241,6 +272,23 @@ class BMDataset(Dataset):
     def get(self, idx):
         data = torch.load(osp.join(self.processed_dir, f'data_{idx}.pt'))
         return data
+
+# #%%        
+# dataset = BMDataset(
+#     root='/home/kpputhuveetil/git/vBM-GNNdev/gnn_blanket_var_data', 
+#     description='blanket_var',
+#     voxel_size=0.05, 
+#     edge_threshold=0.06, 
+#     action_to_all=True, 
+#     testing=False)
+
+# dataset = BMDataset(
+#     root='/home/kpputhuveetil/git/vBM-GNNdev/gnn_high_pose_var_data', 
+#     description='50k_samples',
+#     voxel_size=0.05, 
+#     edge_threshold=0.06, 
+#     action_to_all=True, 
+#     testing=False)
 
 #%%        
 # dataset = BMDataset(
