@@ -11,17 +11,23 @@ import torch, torch_geometric
 from torch_geometric.data import Dataset, Data
 
 from gnn_train_test_new import GNN_Train_Test
+from pathlib import Path
 
 #%%
 
+#!! REVERT CHANGES FOR CMA DATA ISSUEs
 
 class BM_Graph():
-    def __init__(self, voxel_size=float('NaN'), edge_threshold=0.06, action_to_all=True, cloth_initial=None):
+    def __init__(self, root, description, voxel_size=float('NaN'), edge_threshold=0.06, action_to_all=True, cloth_initial=None):
         self.voxel_size = voxel_size
         self.subsample = True if not (np.isnan(self.voxel_size)) else False
         self.edge_threshold = edge_threshold
         self.action_to_all = action_to_all
         # self.testing = testing
+
+        proc_data_dir = f"{description}_vs{self.voxel_size}-et{self.edge_threshold}-aa{int(self.action_to_all)}"
+        self.proc_data_dir = osp.join(root, proc_data_dir, 'processed')
+        # Path(self.proc_data_dir).mkdir(parents=True, exist_ok=True)
 
         if self.subsample:
             initial_blanket_state_3D = self.sub_sample_point_clouds(cloth_initial)
@@ -39,7 +45,11 @@ class BM_Graph():
             x = node_features,
             edge_attr = self.edge_features,
             edge_index = self.edge_indices.t().contiguous(),
-            batch = torch.zeros(node_features.shape[0], dtype=torch.long)
+            batch = torch.zeros(node_features.shape[0], dtype=torch.long),
+            cloth_initial = None,
+            cloth_final = None,
+            action = None,
+            human_pose = None
         )
 
         return data
@@ -95,6 +105,26 @@ class BM_Graph():
             last_seen+=nb_pts_per_voxel[idx]
 
         return cloth_initial_subsample
+
+    def get_cloth_as_tensor(self, cloth_initial_3D_pos, cloth_final_3D_pos):
+        cloth_initial_2D_pos = np.delete(np.array(cloth_initial_3D_pos), 2, axis = 1)
+        cloth_final_2D_pos = np.delete(np.array(cloth_final_3D_pos), 2, axis = 1)
+
+        cloth_i_tensor = torch.tensor(cloth_initial_2D_pos, dtype=torch.float)
+        cloth_f_tensor = torch.tensor(cloth_final_2D_pos, dtype=torch.float)
+        return cloth_i_tensor, cloth_f_tensor
+    
+    def dict_to_Data(self, data_dict):
+        data = Data(
+            x = data_dict['x'],
+            edge_attr =  data_dict['edge_attr'],
+            edge_index =  data_dict['edge_index'],
+            cloth_initial = data_dict['cloth_initial'],
+            cloth_final =  data_dict['cloth_final'],
+            action =  data_dict['action'],
+            human_pose =  data_dict['human_pose']
+        )
+        return data
 
     def len(self):
         return len(self.processed_file_names)
