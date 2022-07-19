@@ -4,6 +4,7 @@ import os, multiprocessing, glob
 import os.path as osp
 import numpy as np
 import json
+from requests import delete
 from sklearn.model_selection import train_test_split
 import torch
 import torch.nn as nn
@@ -28,10 +29,127 @@ class GNN_Train_Test():
     def __init__(self, device) :
         # pass
         # cuda_device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        # self.device = torch.device(device)
+        # print("Device:", self.device)
+        self.set_device(device)
+    
+    def set_device(self, device):
         self.device = torch.device(device)
         print("Device:", self.device)
+    
+    def set_args(self, model_config):
+        proc_layers = int(model_config['proc_layer_num'])
+        learning_rate = float(model_config['learning_rate'])
+        seed = int(model_config['seed'])
+        global_size = int(model_config['global_size'])
+        output_size = int(model_config['output_size'])
+        node_dim = int(model_config['node_dim'])
+        edge_dim = int(model_config['edge_dim'])
 
-    def load_model_from_checkpoint(self, model_dir, model_checkpoint_number=None, batch_size=None, num_workers=None, epochs =None, new_checkpoint_dir=None):
+        self.args = SimpleNamespace(seed=seed,
+                                    learning_rate=learning_rate,
+                                    proc_layer_num=proc_layers, 
+                                    global_size=global_size,
+                                    output_size=output_size,
+                                    node_dim=node_dim,
+                                    edge_dim=edge_dim)
+
+    def set_training_config(self, initial_dataset=None, train_test=None, proc_layers=None, epochs=None, learning_rate=None, seed=None):
+        node_dim = initial_dataset[0].x.shape[1]
+        edge_dim = initial_dataset[0].edge_attr.shape[1]
+        output_size = initial_dataset[0].cloth_final.shape[1]
+        global_size = 0 #! Don't Hardcode
+        config = configparser.ConfigParser()
+        config['DEFAULT'] = {}
+        config['Dataset'] = {
+            'dir':initial_dataset.root,
+            'train_test':train_test,
+            'num_total_data':len(initial_dataset),
+            'num_train_data':len(self.TRAIN_DATASET),
+            'num_test_data':len(self.TEST_DATASET),
+            'voxel_size':initial_dataset.voxel_size,
+            'subsample':initial_dataset.subsample,
+            'edge_threshold':initial_dataset.edge_threshold,
+            'action_to_all':initial_dataset.action_to_all,
+            'shuffle':False}
+        config['Model'] = {
+            'seed':seed,
+            'learning_rate':learning_rate,
+            'epochs':epochs,
+            'proc_layer_num':proc_layers, 
+            'global_size':global_size,
+            'output_size':output_size,
+            'node_dim':node_dim,
+            'edge_dim':edge_dim}
+        with open(self.config_dir, 'w') as configfile:
+            config.write(configfile)
+    
+    #! COME BACK AND FINALIZE THIS
+    def update_training_config(self, config, iter):
+        config['Continual Learning Stats'][f'iteration {iter}'] = {
+            'new_dataset_dir': [],
+            'num_train_data_added':[],
+        }
+        with open(self.config_dir, 'w') as configfile:
+            config.write(configfile)
+    
+
+    def set_initial_dataset(self, dataset, train_test=None):
+        # if you pass a single float for train_test, interpret as the ratio of train:test points to use from the entire dataset
+        if isinstance(train_test, float):
+            train_test_ratio = train_test
+            train_len = round(len(dataset)*train_test_ratio)
+            test_len = -1
+        # if you pass a tuple for tr--9in_test, interpret as the number of train points and test points to select from the entire dataset of points
+        elif isinstance(train_test, tuple): 
+            train_len = train_test[0]
+            test_len = train_test[0] + train_test[1]
+        self.TRAIN_DATASET = dataset[:train_len]
+        self.TEST_DATASET = dataset[train_len:test_len]
+
+        # TRAIN_DATASET = TEST_DATASET = [dataset[0]]
+        # batch_size = num_workers = 1
+
+
+    def set_dataloaders(self, batch_size):
+        self.trainDataLoader = torch_geometric.loader.DataLoader(self.TRAIN_DATASET, batch_size=self.batch_size, shuffle=True, num_workers=self.num_workers,
+                                                        pin_memory=True, drop_last=False)
+        self.testDataLoader = torch_geometric.loader.DataLoader(self.TEST_DATASET, batch_size=self.batch_size, shuffle=False, num_workers=self.num_workers,
+                                                        pin_memory=True, drop_last=False)
+        # self.imageDataLoader = torch_geometric.loader.DataLoader(self.TEST_DATASET[0:num_images], batch_size=1, shuffle=False, num_workers=1,
+        #                                                 pin_memory=True, drop_last=False)
+
+        print("The number of training data is: %d" % len(self.TRAIN_DATASET))
+        print("The number of test data is: %d" % len(self.TEST_DATASET))
+        # print("The number of image data is: %d" % num_images)
+    
+
+    def add_to_train_set(self, new_dataset):
+
+        self.TRAIN_DATASET = torch.utils.data.ConcatDataset([self.TRAIN_DATASET, new_dataset])
+        # self.trainDataLoader = torch_geometric.loader.DataLoader(self.TRAIN_DATASET, batch_size=self.batch_size, shuffle=True, num_workers=self.num_workers,
+        #                                                     pin_memory=True, drop_last=False)
+        # # self.batch_size = len(dataset)
+        # self.batch_size = 1
+
+    def load_model_from_checkpoint(self, model_dir, model_checkpoint_number=None, batch_size=None, num_workers=None, new_save_dir=None):
+        config = configparser.ConfigParser()
+        config.read(osp.join(model_dir, 'config.ini'))
+        model_config = config['Model']
+        self.set_args(model_config)
+        #! Get rid of the model_config variable?????? just use config['Model']
+
+        self.batch_size = batch_size if batch_size != None else int(model_config['batch_size'])
+        self.num_workers = num_workers if num_workers != None else int(model_config['num_workers'])
+        #! CHANGE THIS BACK IS POSSIBLE
+        self.num_workers = 0
+
+        self.load_model(model_dir)
+
+        if new_save_dir is not None:
+            self.set_new_save_dir(new_save_dir)
+    
+    def load_model(self, model_dir, model_checkpoint_number=None):
         checkpoint_dir = osp.join(model_dir, 'checkpoints')
         
         # data_dir = osp.join(path, root, 'raw/*.pkl')
@@ -43,88 +161,35 @@ class GNN_Train_Test():
         else:
             checkpoint_path = osp.join(checkpoint_dir, f'model_{model_checkpoint_number}.pth')
 
-        self.model_checkpoint_number = model_checkpoint_number #! add code to generate this when you first make the model too
+        self.model_checkpoint_number = model_checkpoint_number + 1 #! add code to generate this when you first make the model too
 
-        config = configparser.ConfigParser()
-        config.read(osp.join(model_dir, 'config.ini'))
-
-        model_config = config['Model']
-        epochs = epochs if epochs != None else int(model_config['epochs'])
-        proc_layers = int(model_config['proc_layer_num'])
-        learning_rate = float(model_config['learning_rate'])
-        seed = int(model_config['seed'])
-        global_size = int(model_config['global_size'])
-        output_size = int(model_config['output_size'])
-        node_dim = int(model_config['node_dim'])
-        edge_dim = int(model_config['edge_dim'])
-
-        self.args = SimpleNamespace(
-                    seed=seed,
-                    learning_rate=learning_rate,
-                    epoch = epochs,
-                    proc_layer_num=proc_layers, 
-                    global_size=global_size,
-                    output_size=output_size,
-                    node_dim=node_dim,
-                    edge_dim=edge_dim)
-
-        self.batch_size = batch_size if batch_size != None else int(model_config['batch_size'])
-        self.num_workers = num_workers if num_workers != None else int(model_config['num_workers'])
-        #! CHANGE THIS BACK IS POSSIBLE
-        self.num_workers = 0
 
         self.model = GNNModel(self.args, self.args.proc_layer_num, self.args.global_size, self.args.output_size)
         self.model.to(self.device)
-        self.model.load_state_dict(torch.load(checkpoint_path)['model'])
+        if self.device == torch.device('cpu'):
+            self.model.load_state_dict(torch.load(checkpoint_path, map_location=self.device)['model'])
+        else:
+            self.model.load_state_dict(torch.load(checkpoint_path)['model'])
         self.model_criterion = torch.nn.MSELoss()
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.args.learning_rate)
+        self.optimizer.load_state_dict(torch.load(checkpoint_path)['optimizer'])
         self.scheduler = ReduceLROnPlateau(self.optimizer, 'min', factor=0.8, patience=3, verbose=True)
-
-        # # self.checkpoints_dir = osp.join(new_checkpoint_dir,'checkpoints')
-        # # Path(self.checkpoints_dir).mkdir(parents=True, exist_ok=True)
-        # self.writer_dir = osp.join(new_checkpoint_dir, 'runs')
-        # self.writer = SummaryWriter(self.writer_dir)
-
-    def set_initial_dataset(self, dataset, train_test=None, num_images=None):
-        # if you pass a single float for train_test, interpret as the ratio of train:test points to use from the entire dataset
-        if isinstance(train_test, float):
-            train_test_ratio = train_test
-            train_len = round(len(dataset)*train_test_ratio)
-            test_len = -1
-        # if you pass a tuple for train_test, interpret as the number of train points and test points to select from the entire dataset of points
-        elif isinstance(train_test, tuple): 
-            train_len = train_test[0]
-            test_len = train_test[0] + train_test[1]
-        self.TRAIN_DATASET = dataset[:train_len]
-        self.TEST_DATASET = dataset[train_len:test_len]
-
-        # TRAIN_DATASET = TEST_DATASET = [dataset[0]]
-        # batch_size = num_workers = 1
-        if dataset is not None:
-            self.trainDataLoader = torch_geometric.data.DataLoader(self.TRAIN_DATASET, batch_size=self.batch_size, shuffle=True, num_workers=self.num_workers,
-                                                            pin_memory=True, drop_last=False)
-            self.testDataLoader = torch_geometric.data.DataLoader(self.TEST_DATASET, batch_size=self.batch_size, shuffle=False, num_workers=self.num_workers,
-                                                            pin_memory=True, drop_last=False)
-            self.imageDataLoader = torch_geometric.data.DataLoader(self.TEST_DATASET[0:num_images], batch_size=1, shuffle=False, num_workers=1,
-                                                            pin_memory=True, drop_last=False)
-
-            print("The number of training data is: %d" % len(self.TRAIN_DATASET))
-            print("The number of test data is: %d" % len(self.TEST_DATASET))
-            print("The number of image data is: %d" % num_images)
     
-    def add_to_train_set(self, dataset):
+    def delete_model(self):
+        del self.model
+    
+    def set_new_save_dir(self, new_save_dir):
+        self.writer_dir = osp.join(new_save_dir, 'runs')
+        self.writer = SummaryWriter(self.writer_dir)
 
-        self.TRAIN_DATASET = torch.utils.data.ConcatDataset([self.TRAIN_DATASET, dataset])
-        self.trainDataLoader = torch_geometric.data.DataLoader(self.TRAIN_DATASET, batch_size=self.batch_size, shuffle=True, num_workers=self.num_workers,
-                                                            pin_memory=True, drop_last=False)
-        # self.batch_size = len(dataset)
-        self.batch_size = 1
+        self.checkpoints_dir = osp.join(new_save_dir, 'checkpoints')
+        Path(self.checkpoints_dir).mkdir(parents=True, exist_ok=True)
 
-
-    def create_new_model(self, save_dir, cuda_device, dataset=None, train_test=None, proc_layers=None, num_images=None, epochs=None, learning_rate=None, seed=None, batch_size=None, num_workers=None, model_descirption=None):
+    def initialize_new_model(self, save_dir, dataset=None, train_test=None, proc_layers=None, num_images=None, epochs=None, learning_rate=None, seed=None, batch_size=None, num_workers=None, model_descirption=None):
         torch.cuda.empty_cache()
         # print(f"TEST: edge threshold = {edge_thres}, action to {action_to_node} nodes, processing layers = {proc_layers}")
         self.model_id = f"{model_descirption}_epochs={epochs}_batch={batch_size}_workers={num_workers}_{round(time.time())}"
+        
         self.writer_dir = osp.join(save_dir, self.model_id, 'runs')
         self.writer = SummaryWriter(self.writer_dir)
 
@@ -138,65 +203,50 @@ class GNN_Train_Test():
             torch.cuda.manual_seed_all(seed)
         np.random.seed(seed)
 
-        # dataset = dataset.shuffle()
+        # # dataset = dataset.shuffle()
 
-        # if you pass a single float for train_test, interpret as the ratio of train:test points to use from the entire dataset
-        if isinstance(train_test, float):
-            train_test_ratio = train_test
-            train_len = round(len(dataset)*train_test_ratio)
-            test_len = -1
-        # if you pass a tuple for train_test, interpret as the number of train points and test points to select from the entire dataset of points
-        elif isinstance(train_test, tuple): 
-            train_len = train_test[0]
-            test_len = train_test[0] + train_test[1]
-        TRAIN_DATASET = dataset[:train_len]
-        self.all_train_sets = [TRAIN_DATASET]
-        TEST_DATASET = dataset[train_len:test_len]
-        # TEST_DATASET = dataset[-1* train_test[1]:]
+        self.set_initial_dataset(dataset)
+        self.set_dataloaders(batch_size)
 
-        # cpus = multiprocessing.cpu_count()//2
-        # cpus = multiprocessing.cpu_count() - 1
-        # batch_size = 100
-        # num_workers = 8
-        self.batch_size = batch_size
-        self.num_workers = num_workers
+        self.model_checkpoint_number = 0
 
-        # TRAIN_DATASET = TEST_DATASET = [dataset[0]]
-        # batch_size = num_workers = 1
-        if dataset is not None:
-            self.trainDataLoader = torch_geometric.data.DataLoader(TRAIN_DATASET, batch_size=self.batch_size, shuffle=True, num_workers=self.num_workers,
-                                                            pin_memory=True, drop_last=False)
-            self.testDataLoader = torch_geometric.data.DataLoader(TEST_DATASET, batch_size=self.batch_size, shuffle=False, num_workers=self.num_workers,
-                                                            pin_memory=True, drop_last=False)
-            self.imageDataLoader = torch_geometric.data.DataLoader(TEST_DATASET[0:num_images], batch_size=1, shuffle=False, num_workers=1,
-                                                            pin_memory=True, drop_last=False)
+        # # if you pass a single float for train_test, interpret as the ratio of train:test points to use from the entire dataset
+        # if isinstance(train_test, float):
+        #     train_test_ratio = train_test
+        #     train_len = round(len(dataset)*train_test_ratio)
+        #     test_len = -1
+        # # if you pass a tuple for train_test, interpret as the number of train points and test points 
+        # # cpus = multiprocessing.cpu_count()//2
+        # # TEST_DATASET = dataset[-1* train_test[1]:]
 
-            print("The number of training data is: %d" % len(TRAIN_DATASET))
-            print("The number of test data is: %d" % len(TEST_DATASET))
-            print("The number of image data is: %d" % num_images)
+        # # cpus = multiprocessing.cpu_count()//2
+        # # cpus = multiprocessing.cpu_count() - 1
+        # # batch_size = 100
+        # # num_workers = 8
+        # self.batch_size = batch_size
+        # self.num_workers = num_workers
 
-            node_dim = dataset[0].x.shape[1]
-            edge_dim = dataset[0].edge_attr.shape[1]
-            output_size = dataset[0].cloth_final.shape[1]
-            global_size = 0 #! Don't Hardcode
+        # # TRAIN_DATASET = TEST_DATASET = [dataset[0]]
+        # # batch_size = num_workers = 1
+        # if dataset is not None:
+        #     self.trainDataLoader = torch_geometric.loader.DataLoader(TRAIN_DATASET, batch_size=self.batch_size, shuffle=True, num_workers=self.num_workers,
+        #                                                     pin_memory=True, drop_last=False)
+        #     self.testDataLoader = torch_geometric.loader.DataLoader(TEST_DATASET, batch_size=self.batch_size, shuffle=False, num_workers=self.num_workers,
+        #                                                     pin_memory=True, drop_last=False)
+        #     self.imageDataLoader = torch_geometric.loader.DataLoader(TEST_DATASET[0:num_images], batch_size=1, shuffle=False, num_workers=1,
+        #                                                     pin_memory=True, drop_last=False)
+
+        #     print("The number of training data is: %d" % len(TRAIN_DATASET))
+        #     print("The number of test data is: %d" % len(TEST_DATASET))
+        #     print("The number of image data is: %d" % num_images)
+
+        #     node_dim = dataset[0].x.shape[1]
+        #     edge_dim = dataset[0].edge_attr.shape[1]
+        #     output_size = dataset[0].cloth_final.shape[1]
+        #     global_size = 0 #! Don't Hardcode
 
         print(f"Node feature length: {node_dim}, edge feature length: {edge_dim}, global_size: {global_size}, output size: {output_size}")
         print("Processing layers:", proc_layers)
-
-        self.args = SimpleNamespace(
-            seed=seed,
-            learning_rate=learning_rate,
-            epoch = epochs,
-            proc_layer_num=proc_layers, 
-            global_size=global_size,
-            output_size=output_size,
-            node_dim=node_dim,
-            edge_dim=edge_dim)
-        self.model = GNNModel(self.args, self.args.proc_layer_num, self.args.global_size, self.args.output_size)
-        self.model.to(self.device)
-        self.model_criterion = torch.nn.MSELoss()
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.args.learning_rate)
-        self.scheduler = ReduceLROnPlateau(self.optimizer, 'min', factor=0.8, patience=3, verbose=True)
 
         config = configparser.ConfigParser()
         config['DEFAULT'] = {}
@@ -212,16 +262,26 @@ class GNN_Train_Test():
             'action_to_all':dataset.action_to_all,
             'shuffle':False}
         config['Model'] = {
-            'seed':self.args.seed,
-            'learning_rate':self.args.learning_rate,
-            'epochs': self.args.epoch,
-            'proc_layer_num':self.args.proc_layer_num, 
-            'global_size':self.args.global_size,
-            'output_size':self.args.output_size,
-            'node_dim':self.args.node_dim,
-            'edge_dim':self.args.edge_dim}
+            'seed':seed,
+            'learning_rate':learning_rate,
+            'epochs':epochs,
+            'proc_layer_num':proc_layers, 
+            'global_size':global_size,
+            'output_size':output_size,
+            'node_dim':node_dim,
+            'edge_dim':edge_dim}
         with open(self.config_dir, 'w') as configfile:
             config.write(configfile)
+
+        self.set_args(config['Model'])
+
+        self.model = GNNModel(self.args, self.args.proc_layer_num, self.args.global_size, self.args.output_size)
+        self.model.to(self.device)
+        self.model_criterion = torch.nn.MSELoss()
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.args.learning_rate)
+        self.scheduler = ReduceLROnPlateau(self.optimizer, 'min', factor=0.8, patience=3, verbose=True)
+
+
         print("Set up complete")
     
     def run(self, args, epoch, dataloader, mode, take_images=False, fig_dir=None):
@@ -298,11 +358,12 @@ class GNN_Train_Test():
         return eval_metrics
         # return (eval_metrics, out)
 
-    def train(self):
+    def train(self, epochs):
+        self.model.to(self.device)
         best_loss = best_rmse = best_rele = best_time = None
 
         t_initial = time.time()
-        for epoch in tqdm(range(self.args.epoch)):
+        for epoch in tqdm(range(epochs)):
             t0 = time.time()
             take_images = False
             train_metrics = self.run(
@@ -326,11 +387,14 @@ class GNN_Train_Test():
             # print(train_metrics)
             torch.cuda.empty_cache()
 
+            elapsed_epoch = self.model_checkpoint_number+epoch
             save_dict = {
                 'model': self.model.state_dict(),
-                'optimizer': self.optimizer.state_dict()
+                'optimizer': self.optimizer.state_dict(),
+                'epoch': elapsed_epoch,
+                'loss': train_metrics['total_loss']
             }
-            savepath = osp.join(self.checkpoints_dir, 'model_{}.pth'.format(epoch))
+            savepath = osp.join(self.checkpoints_dir, 'model_{}.pth'.format(elapsed_epoch))
             torch.save(save_dict, savepath)
 
         self.writer.add_hparams(
@@ -351,7 +415,7 @@ class GNN_Train_Test():
     def evaluate(self, checkpoint_path):
         checkpoint_path = osp.join(checkpoint_path, 'model_249.pth')
 
-        self.model.load_state_dict(torch.load(checkpoint_path)['model'])
+        self.model.load_state_dglobict(torch.load(checkpoint_path)['model'])
         self.model.to(self.device)
 
         run_dir = "/home/kpputhuveetil/git/vBM-GNNdev/trained_models/test/runs"
@@ -529,3 +593,5 @@ class GNN_Train_Test():
 # #%%
 # gnn_train_test.train()
 # # %%
+Warning
+
