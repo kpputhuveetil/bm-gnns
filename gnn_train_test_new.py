@@ -1,28 +1,31 @@
 #%%
 # from _typeshed import NoneType
-import os, multiprocessing, glob
-import os.path as osp
-import numpy as np
+import configparser
+import glob
 import json
-from requests import delete
-from sklearn.model_selection import train_test_split
-import torch
-import torch.nn as nn
-from torch.optim.lr_scheduler import ReduceLROnPlateau
-import torch_geometric
-from torch_geometric.data import Data
+import multiprocessing
+import os
+import os.path as osp
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
+import torch.nn as nn
+import torch_geometric
 from bm_dataset import BMDataset
 # from bm_dataset_3D import BMDataset
 # from bm_dataset_no_edge_attr import BMDataset
 from models_graph_res import GNNModel
-from types import SimpleNamespace
-from tqdm import tqdm
+from requests import delete
+from sklearn.model_selection import train_test_split
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.tensorboard import SummaryWriter
-import matplotlib.pyplot as plt
-import configparser
+from torch_geometric.data import Data
+from tqdm import tqdm
+
 
 #%%
 class GNN_Train_Test():
@@ -104,14 +107,15 @@ class GNN_Train_Test():
         elif isinstance(train_test, tuple): 
             train_len = train_test[0]
             test_len = train_test[0] + train_test[1]
-        self.TRAIN_DATASET = dataset[:train_len]
+        self.TRAIN_DATASET = self.initial_dataset = dataset[:train_len]
         self.TEST_DATASET = dataset[train_len:test_len]
+        self.dataset_dir = [dataset.root]
 
         # TRAIN_DATASET = TEST_DATASET = [dataset[0]]
         # batch_size = num_workers = 1
 
 
-    def set_dataloaders(self, batch_size):
+    def set_dataloaders(self):
         self.trainDataLoader = torch_geometric.loader.DataLoader(self.TRAIN_DATASET, batch_size=self.batch_size, shuffle=True, num_workers=self.num_workers,
                                                         pin_memory=True, drop_last=False)
         self.testDataLoader = torch_geometric.loader.DataLoader(self.TEST_DATASET, batch_size=self.batch_size, shuffle=False, num_workers=self.num_workers,
@@ -127,6 +131,7 @@ class GNN_Train_Test():
     def add_to_train_set(self, new_dataset):
 
         self.TRAIN_DATASET = torch.utils.data.ConcatDataset([self.TRAIN_DATASET, new_dataset])
+        self.dataset_dir.append(new_dataset.root)
         # self.trainDataLoader = torch_geometric.loader.DataLoader(self.TRAIN_DATASET, batch_size=self.batch_size, shuffle=True, num_workers=self.num_workers,
         #                                                     pin_memory=True, drop_last=False)
         # # self.batch_size = len(dataset)
@@ -144,10 +149,12 @@ class GNN_Train_Test():
         #! CHANGE THIS BACK IS POSSIBLE
         self.num_workers = 0
 
-        self.load_model(model_dir)
+        self.load_model(model_dir, model_checkpoint_number=model_checkpoint_number)
 
         if new_save_dir is not None:
             self.set_new_save_dir(new_save_dir)
+        else:
+            self.set_new_save_dir(model_dir)
     
     def load_model(self, model_dir, model_checkpoint_number=None):
         checkpoint_dir = osp.join(model_dir, 'checkpoints')
@@ -185,16 +192,13 @@ class GNN_Train_Test():
         self.checkpoints_dir = osp.join(new_save_dir, 'checkpoints')
         Path(self.checkpoints_dir).mkdir(parents=True, exist_ok=True)
 
-    def initialize_new_model(self, save_dir, dataset=None, train_test=None, proc_layers=None, num_images=None, epochs=None, learning_rate=None, seed=None, batch_size=None, num_workers=None, model_descirption=None):
+    def initialize_new_model(self, save_dir, train_test=None, proc_layers=None, num_images=None, epochs=None, learning_rate=None, seed=None, batch_size=None, num_workers=None, model_descirption=None, use_displacement=False):
         torch.cuda.empty_cache()
         # print(f"TEST: edge threshold = {edge_thres}, action to {action_to_node} nodes, processing layers = {proc_layers}")
         self.model_id = f"{model_descirption}_epochs={epochs}_batch={batch_size}_workers={num_workers}_{round(time.time())}"
         
-        self.writer_dir = osp.join(save_dir, self.model_id, 'runs')
-        self.writer = SummaryWriter(self.writer_dir)
-
-        self.checkpoints_dir = osp.join(save_dir, self.model_id, 'checkpoints')
-        Path(self.checkpoints_dir).mkdir(parents=True, exist_ok=True)
+        self.set_new_save_dir(osp.join(save_dir, self.model_id))
+        print(self.checkpoints_dir)
 
         self.config_dir = osp.join(save_dir, self.model_id, 'config.ini')
 
@@ -205,10 +209,13 @@ class GNN_Train_Test():
 
         # # dataset = dataset.shuffle()
 
-        self.set_initial_dataset(dataset)
-        self.set_dataloaders(batch_size)
+        # self.set_initial_dataset(dataset)
+        # self.set_dataloaders(batch_size)
+        self.batch_size = batch_size
+        self.num_workers = num_workers
 
         self.model_checkpoint_number = 0
+        self.use_displacement = use_displacement
 
         # # if you pass a single float for train_test, interpret as the ratio of train:test points to use from the entire dataset
         # if isinstance(train_test, float):
@@ -239,11 +246,11 @@ class GNN_Train_Test():
         #     print("The number of training data is: %d" % len(TRAIN_DATASET))
         #     print("The number of test data is: %d" % len(TEST_DATASET))
         #     print("The number of image data is: %d" % num_images)
-
-        #     node_dim = dataset[0].x.shape[1]
-        #     edge_dim = dataset[0].edge_attr.shape[1]
-        #     output_size = dataset[0].cloth_final.shape[1]
-        #     global_size = 0 #! Don't Hardcode
+        dataset = self.initial_dataset
+        node_dim = dataset[0].x.shape[1]
+        edge_dim = dataset[0].edge_attr.shape[1]
+        output_size = dataset[0].cloth_final.shape[1]
+        global_size = 0 #! Don't Hardcode
 
         print(f"Node feature length: {node_dim}, edge feature length: {edge_dim}, global_size: {global_size}, output size: {output_size}")
         print("Processing layers:", proc_layers)
@@ -251,11 +258,11 @@ class GNN_Train_Test():
         config = configparser.ConfigParser()
         config['DEFAULT'] = {}
         config['Dataset'] = {
-            'dir':dataset.root,
-            'train_test':train_test,
-            'num_total_data':len(dataset),
-            'num_train_data':len(TRAIN_DATASET),
-            'num_test_data':len(TEST_DATASET),
+            'dir':self.dataset_dir,
+            # 'train_test':train_test,
+            # 'num_total_data':len(dataset),
+            'num_train_data':len(self.TRAIN_DATASET),
+            'num_test_data':len(self.TEST_DATASET),
             'voxel_size':dataset.voxel_size,
             'subsample':dataset.subsample,
             'edge_threshold':dataset.edge_threshold,
@@ -269,7 +276,10 @@ class GNN_Train_Test():
             'global_size':global_size,
             'output_size':output_size,
             'node_dim':node_dim,
-            'edge_dim':edge_dim}
+            'edge_dim':edge_dim,
+            'batch_size':batch_size,
+            'num_workers':num_workers,
+            'use_displacement':self.use_displacement}
         with open(self.config_dir, 'w') as configfile:
             config.write(configfile)
 
@@ -310,7 +320,11 @@ class GNN_Train_Test():
                 # data['edge_attr'] = edge_attr
                 # data['edge_attr'] = data['edge_attr'].float()
 
-                state_target = data['cloth_final']
+                if self.use_displacement:
+                    state_target = data['cloth_displacement']
+                else:
+                    state_target = data['cloth_final']
+
                 state_predicted = self.model(data)['target']
                 # out = (state_target, state_predicted)
 
@@ -364,6 +378,7 @@ class GNN_Train_Test():
 
         t_initial = time.time()
         for epoch in tqdm(range(epochs)):
+            elapsed_epoch = self.model_checkpoint_number+epoch
             t0 = time.time()
             take_images = False
             train_metrics = self.run(
@@ -373,10 +388,10 @@ class GNN_Train_Test():
                                     'train',
                                     take_images=False)
             t1 = time.time()
-            self.writer.add_scalar("Loss/train", train_metrics['total_loss'], epoch)
-            self.writer.add_scalar("RMSE/train", train_metrics['rmse'], epoch)
-            self.writer.add_scalar("Relative_error/train", train_metrics['relative_error'], epoch)
-            self.writer.add_scalar("Time_per_epoch/train", t1-t0, epoch)
+            self.writer.add_scalar("Loss/train", train_metrics['total_loss'], elapsed_epoch)
+            self.writer.add_scalar("RMSE/train", train_metrics['rmse'], elapsed_epoch)
+            self.writer.add_scalar("Relative_error/train", train_metrics['relative_error'], elapsed_epoch)
+            self.writer.add_scalar("Time_per_epoch/train", t1-t0, elapsed_epoch)
 
             if (best_loss is None) or (train_metrics['total_loss'] < best_loss):
                 best_loss = train_metrics['total_loss']
@@ -387,7 +402,6 @@ class GNN_Train_Test():
             # print(train_metrics)
             torch.cuda.empty_cache()
 
-            elapsed_epoch = self.model_checkpoint_number+epoch
             save_dict = {
                 'model': self.model.state_dict(),
                 'optimizer': self.optimizer.state_dict(),
@@ -413,10 +427,6 @@ class GNN_Train_Test():
         print('Training Done!\n')
     
     def evaluate(self, checkpoint_path):
-        checkpoint_path = osp.join(checkpoint_path, 'model_249.pth')
-
-        self.model.load_state_dglobict(torch.load(checkpoint_path)['model'])
-        self.model.to(self.device)
 
         run_dir = "/home/kpputhuveetil/git/vBM-GNNdev/trained_models/test/runs"
         fig_dir = osp.join(run_dir, 'images')
@@ -432,10 +442,6 @@ class GNN_Train_Test():
         print('Evaluation Done!\n')
     
     def evaluate_images(self, checkpoint_path, run_dir):
-        checkpoint_path = osp.join(checkpoint_path, 'model_249.pth')
-
-        self.model.load_state_dict(torch.load(checkpoint_path)['model'])
-        self.model.to(self.device)
 
         fig_dir = osp.join(run_dir, 'images')
         Path(fig_dir).mkdir(parents=True, exist_ok=True)
@@ -593,5 +599,3 @@ class GNN_Train_Test():
 # #%%
 # gnn_train_test.train()
 # # %%
-Warning
-

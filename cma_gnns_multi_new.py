@@ -277,7 +277,7 @@ def gnn_cma(env_name, i, model, target_limb_code):
 def save_data_to_pickle(i, seed, action, human_pose, fig, target_limb_code, sim_info, cma_info):
     pid = os.getpid()
     filename = f"tl{target_limb_code}_c{i+counter}_{seed}_pid{pid}"
-    pkl_loc = '/home/kpputhuveetil/git/vBM-GNNdev/cmaes_eval_data_500'
+    pkl_loc = '/home/kpputhuveetil/git/vBM-GNNdev/cmaes_eval_traincma_100'
     with open(os.path.join(pkl_loc, filename +".pkl"),"wb") as f:
         pickle.dump({
             "action":action,
@@ -295,7 +295,9 @@ env_name = "BodiesUncoveredGNN-v1"
 # checkpoint = '/home/kpputhuveetil/git/vBM-GNNdev/trained_models/50ktest/checkpoints'
 # checkpoint = '/home/kpputhuveetil/git/vBM-GNNdev/trained_models/test/checkpoints'
 # checkpoint = '/home/kpputhuveetil/git/vBM-GNNdev/trained_models/train10k_epochs=250_batch=100_workers=4_1646202554/checkpoints'
-checkpoint = '/home/kpputhuveetil/git/vBM-GNNdev/trained_models/train10k_3D_epochs=250_batch=100_workers=4_1646468311/checkpoints'
+# checkpoint = '/home/kpputhuveetil/git/vBM-GNNdev/trained_models/train10k_3D_epochs=250_batch=100_workers=4_1646468311/checkpoints'
+# checkpoint = '/home/kpputhuveetil/git/vBM-GNNdev/trained_models/high_pose_var_10k_epochs=250_batch=100_workers=4_1647288217/checkpoints'
+checkpoint = '/home/kpputhuveetil/git/vBM-GNNdev/trained_models/trained_with_cmaes_data_epochs=250_batch=100_workers=4_1650226144/checkpoints'
 model = load_model(checkpoint)
 
 # * set the number of processes to 1/4 of the total number of cpus
@@ -303,8 +305,8 @@ model = load_model(checkpoint)
 num_proc = multiprocessing.cpu_count()//16
 num_proc = 8
 
-# target_limb_code = 14
-target_limb_code = None
+target_limb_code = 14
+# target_limb_code = None
 
 counter = 0
 
@@ -314,7 +316,7 @@ num_processes = multiprocessing.cpu_count() - 1
 # num data points to collect
 
 # print(filenames)
-trials = 500
+trials = 100
 # num_processes = 10
 num_processes = 2
 

@@ -7,7 +7,7 @@ from sklearn.metrics import coverage_error
 sys.path.insert(0, '/home/kpputhuveetil/git/vBM-GNNdev/assistive-gym-fem')
 from assistive_gym.envs.bu_gnn_util import *
 # import assistive_gym.envs.bu_gnn_util
-from continual_learning_util import *
+from cma_gnn_util import *
 
 import numpy as np
 import cma
